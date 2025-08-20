@@ -85,6 +85,12 @@ class HealthResponse(BaseModel):
     models_loaded: bool
 
 
+class DateRangeResponse(BaseModel):
+    current_date: str
+    historical_data_available: str
+    forecast_range_info: str
+
+
 # -------------------------
 # Utility functions
 # -------------------------
@@ -96,6 +102,8 @@ def get_daynight_flag(hour=None):
 
 def calc_fwi_quick(temp_c, rh, wind_kmh, rain_mm):
     try:
+        logger.info(f"Calculating FWI with: temp={temp_c}, rh={rh}, wind={wind_kmh}, rain={rain_mm}")
+
         rh = float(np.clip(rh, 1e-3, 100))
         wind_kmh = max(0.0, float(wind_kmh))
         rain_mm = max(0.0, float(rain_mm or 0.0))
@@ -106,14 +114,31 @@ def calc_fwi_quick(temp_c, rh, wind_kmh, rain_mm):
         isi = 0.208 * wind_factor * max(0.0, ffmc - 80.0)
         bui = max(0.0, temp_c * (1 - rh / 100.0) - 0.3 * rain_mm)
         fwi = isi * np.exp(0.023 * bui)
-        return float(max(0.0, fwi))
+
+        result = float(max(0.0, fwi))
+        logger.info(f"Calculated FWI: {result}")
+        return result
     except Exception as e:
         logger.error(f"FWI calculation error: {e}")
         return 0.0
 
 
 def fetch_weather(lat, lon, date_str):
-    url = "https://api.open-meteo.com/v1/forecast"
+    logger.info(f"Fetching weather for lat={lat}, lon={lon}, date={date_str}")
+
+    # Determine if we need historical or forecast data
+    target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+    today = datetime.now().date()
+
+    if target_date <= today:
+        # Use historical weather API for past dates
+        url = "https://archive-api.open-meteo.com/v1/archive"
+        logger.info(f"Using historical weather API for date: {date_str}")
+    else:
+        # Use forecast API for future dates
+        url = "https://api.open-meteo.com/v1/forecast"
+        logger.info(f"Using forecast weather API for date: {date_str}")
+
     params = {
         "latitude": lat,
         "longitude": lon,
@@ -126,58 +151,157 @@ def fetch_weather(lat, lon, date_str):
     }
 
     try:
+        logger.info(f"Making request to: {url} with params: {params}")
         response = requests.get(url, params=params, timeout=30)
         response.raise_for_status()
         data = response.json()
+        logger.info(f"Weather API response received successfully")
+
+        # Log the structure of the response for debugging
+        logger.info(f"Response keys: {list(data.keys())}")
+        if "hourly" in data:
+            logger.info(f"Hourly keys: {list(data['hourly'].keys())}")
+        if "daily" in data:
+            logger.info(f"Daily keys: {list(data['daily'].keys())}")
+
+    except requests.RequestException as e:
+        logger.error(f"Weather API request error: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            logger.error(f"Response status: {e.response.status_code}")
+            logger.error(f"Response text: {e.response.text}")
+
+            # Check if it's a date range error and provide helpful message
+            if e.response.status_code == 400 and "out of allowed range" in e.response.text:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Date {date_str} is outside the available weather data range. Please use a date within the last few years for historical data or check the forecast range for future dates."
+                )
+        raise HTTPException(status_code=500, detail=f"Weather API error: {str(e)}")
     except Exception as e:
+        logger.error(f"Unexpected weather API error: {e}")
         raise HTTPException(status_code=500, detail=f"Weather API error: {str(e)}")
 
     hourly = data.get("hourly", {})
     daily = data.get("daily", {})
 
     def safe_mean(arr):
-        return np.mean(arr) if arr and len(arr) > 0 else 0.0
+        if not arr or len(arr) == 0:
+            logger.warning(f"Empty array for mean calculation")
+            return 0.0
+        try:
+            result = np.mean(arr)
+            return float(result) if not np.isnan(result) else 0.0
+        except Exception as e:
+            logger.error(f"Error calculating mean: {e}")
+            return 0.0
 
     def safe_std(arr):
-        return np.std(arr) if arr and len(arr) > 0 else 0.0
+        if not arr or len(arr) == 0:
+            logger.warning(f"Empty array for std calculation")
+            return 0.0
+        try:
+            result = np.std(arr)
+            return float(result) if not np.isnan(result) else 0.0
+        except Exception as e:
+            logger.error(f"Error calculating std: {e}")
+            return 0.0
 
     def safe_max(arr):
-        return np.max(arr) if arr and len(arr) > 0 else 0.0
+        if not arr or len(arr) == 0:
+            logger.warning(f"Empty array for max calculation")
+            return 0.0
+        try:
+            result = np.max(arr)
+            return float(result) if not np.isnan(result) else 0.0
+        except Exception as e:
+            logger.error(f"Error calculating max: {e}")
+            return 0.0
 
     def safe_min(arr):
-        return np.min(arr) if arr and len(arr) > 0 else 0.0
+        if not arr or len(arr) == 0:
+            logger.warning(f"Empty array for min calculation")
+            return 0.0
+        try:
+            result = np.min(arr)
+            return float(result) if not np.isnan(result) else 0.0
+        except Exception as e:
+            logger.error(f"Error calculating min: {e}")
+            return 0.0
 
     def safe_sum(arr):
-        return np.sum(arr) if arr and len(arr) > 0 else 0.0
+        if not arr or len(arr) == 0:
+            logger.warning(f"Empty array for sum calculation")
+            return 0.0
+        try:
+            result = np.sum(arr)
+            return float(result) if not np.isnan(result) else 0.0
+        except Exception as e:
+            logger.error(f"Error calculating sum: {e}")
+            return 0.0
 
-    fwi = calc_fwi_quick(
-        temp_c=safe_mean(hourly.get("temperature_2m", [])),
-        rh=safe_min(hourly.get("relative_humidity_2m", [])),
-        wind_kmh=safe_max(hourly.get("wind_speed_10m", [])),
-        rain_mm=safe_sum(daily.get("precipitation_sum", [0.0]))
-    )
+    try:
+        # Extract weather data with logging
+        temp_data = hourly.get("temperature_2m", [])
+        humidity_data = hourly.get("relative_humidity_2m", [])
+        wind_data = hourly.get("wind_speed_10m", [])
+        precip_data = daily.get("precipitation_sum", [0.0])
 
-    features = {
-        "fire_weather_index": fwi,
-        "pressure_mean": safe_mean(hourly.get("pressure_msl", [])),
-        "wind_direction_mean": safe_mean(hourly.get("wind_direction_10m", [])),
-        "wind_direction_std": safe_std(hourly.get("wind_direction_10m", [])),
-        "solar_radiation_mean": safe_mean(hourly.get("shortwave_radiation", [])),
-        "dewpoint_mean": safe_mean(hourly.get("dewpoint_2m", [])),
-        "cloud_cover_mean": safe_mean(hourly.get("cloudcover", [])),
-        "evapotranspiration_total": safe_sum(daily.get("et0_fao_evapotranspiration", [0])),
-        "humidity_min": safe_min(hourly.get("relative_humidity_2m", [])),
-        "temp_mean": safe_mean(hourly.get("temperature_2m", [])),
-        "temp_range": safe_max(hourly.get("temperature_2m", [])) - safe_min(hourly.get("temperature_2m", [])),
-        "wind_speed_max": safe_max(hourly.get("wind_speed_10m", []))
-    }
-    return features
+        logger.info(f"Temperature data length: {len(temp_data)}")
+        logger.info(f"Humidity data length: {len(humidity_data)}")
+        logger.info(f"Wind data length: {len(wind_data)}")
+        logger.info(f"Precipitation data: {precip_data}")
+
+        fwi = calc_fwi_quick(
+            temp_c=safe_mean(temp_data),
+            rh=safe_min(humidity_data),
+            wind_kmh=safe_max(wind_data),
+            rain_mm=safe_sum(precip_data)
+        )
+
+        features = {
+            "fire_weather_index": fwi,
+            "pressure_mean": safe_mean(hourly.get("pressure_msl", [])),
+            "wind_direction_mean": safe_mean(hourly.get("wind_direction_10m", [])),
+            "wind_direction_std": safe_std(hourly.get("wind_direction_10m", [])),
+            "solar_radiation_mean": safe_mean(hourly.get("shortwave_radiation", [])),
+            "dewpoint_mean": safe_mean(hourly.get("dewpoint_2m", [])),
+            "cloud_cover_mean": safe_mean(hourly.get("cloudcover", [])),
+            "evapotranspiration_total": safe_sum(daily.get("et0_fao_evapotranspiration", [0])),
+            "humidity_min": safe_min(hourly.get("relative_humidity_2m", [])),
+            "temp_mean": safe_mean(hourly.get("temperature_2m", [])),
+            "temp_range": safe_max(hourly.get("temperature_2m", [])) - safe_min(hourly.get("temperature_2m", [])),
+            "wind_speed_max": safe_max(hourly.get("wind_speed_10m", []))
+        }
+
+        logger.info(f"Calculated features: {features}")
+        return features
+
+    except Exception as e:
+        logger.error(f"Error processing weather data: {e}")
+        raise
 
 
 def build_features(lat, lon, date_str):
     try:
+        logger.info(f"Building features for lat={lat}, lon={lon}, date={date_str}")
+
+        # Validate inputs
+        if not (-90 <= lat <= 90):
+            raise ValueError(f"Invalid latitude: {lat}")
+        if not (-180 <= lon <= 180):
+            raise ValueError(f"Invalid longitude: {lon}")
+
+        # Parse date
+        try:
+            dt = datetime.strptime(date_str, "%Y-%m-%d")
+        except ValueError as e:
+            logger.error(f"Date parsing error: {e}")
+            raise ValueError(f"Invalid date format: {date_str}")
+
+        # Fetch weather data
         weather = fetch_weather(lat, lon, date_str)
-        dt = datetime.strptime(date_str, "%Y-%m-%d")
+
+        # Calculate geographic features
         lat_rad, lon_rad = np.radians(lat), np.radians(lon)
         month_angle = 2 * np.pi * (dt.month / 12)
 
@@ -199,10 +323,26 @@ def build_features(lat, lon, date_str):
             np.sin(lon_rad), np.cos(lon_rad),
             np.sin(month_angle), np.cos(month_angle)
         ]
-        return np.array(features).reshape(1, -1)
+
+        logger.info(f"Feature vector length: {len(features)}")
+        logger.info(f"Feature values: {features}")
+
+        # Check for NaN or inf values
+        features_array = np.array(features)
+        if np.any(np.isnan(features_array)) or np.any(np.isinf(features_array)):
+            logger.error(f"Invalid values in features: {features}")
+            raise ValueError("Features contain NaN or infinite values")
+
+        return features_array.reshape(1, -1)
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Feature building error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to build features")
+        logger.error(f"Error type: {type(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Failed to build features: {str(e)}")
 
 
 # -------------------------
@@ -213,7 +353,7 @@ async def root():
     return {
         "message": "Wildfire Prediction API",
         "version": "1.0",
-        "endpoints": ["/predict", "/health", "/docs"]
+        "endpoints": ["/predict", "/health", "/date-info", "/docs"]
     }
 
 
@@ -229,6 +369,17 @@ async def health_check():
     return HealthResponse(
         status="healthy" if models_loaded else "unhealthy",
         models_loaded=models_loaded
+    )
+
+
+@app.get("/date-info", response_model=DateRangeResponse)
+async def get_date_info():
+    """Get information about available date ranges for weather data"""
+    today = datetime.now().date()
+    return DateRangeResponse(
+        current_date=today.strftime("%Y-%m-%d"),
+        historical_data_available="Available from 1940-01-01 to yesterday",
+        forecast_range_info="Forecast range varies but typically 7-16 days from today. Check API response for exact range."
     )
 
 
@@ -277,7 +428,7 @@ async def predict(data: PredictRequest):
         raise
     except Exception as e:
         logger.error(f"Prediction error: {e}")
-        raise HTTPException(status_code=500, detail="Prediction failed")
+        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
 
 
 # -------------------------
