@@ -1,29 +1,11 @@
-# Core FastAPI and ASGI server
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
+fastapi==0.116.1
+uvicorn==0.25.0
+numpy==2.3.2
+scikit-learn==1.7.1
+joblib==1.5.1
+tensorflow==2.20.0
+pydantic==2.11.7
+requests==2.32.4
 
-# Data processing and ML
-numpy==1.24.3
-pandas==2.0.3
-scikit-learn==1.3.0
-joblib==1.3.2
 
-# TensorFlow (CPU optimized for Railway)
-tensorflow-cpu==2.13.0
-
-# HTTP requests
-requests==2.31.0
-httpx==0.25.0
-
-# Data validation
-pydantic==2.4.2
-pydantic-settings==2.0.3
-
-# Async support
-asyncio==3.4.3
-aiofiles==23.2.0
-
-# Additional utilities
-python-multipart==0.0.6
-python-json-logger==2.0.7
 
