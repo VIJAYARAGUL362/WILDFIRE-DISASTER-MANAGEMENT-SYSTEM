@@ -58,9 +58,9 @@ class ModelStore:
 
     def load_models(self):
         try:
-            self.occurrence_model = tf.keras.models.load_model("wildfire_occurrence_model.keras")
+            self.occurrence_model = tf.keras.models.load_model("wildfire_occurence_model.keras")
             self.severity_model = tf.keras.models.load_model("wildfire_severity_model.keras")
-            self.occurrence_scaler = joblib.load("occurrence_scaler.joblib")
+            self.occurrence_scaler = joblib.load("occurence_scaler.joblib")
             self.severity_scaler = joblib.load("severity_scaler.joblib")
             self.is_loaded = True
             self.load_time = datetime.now(UTC).isoformat()
