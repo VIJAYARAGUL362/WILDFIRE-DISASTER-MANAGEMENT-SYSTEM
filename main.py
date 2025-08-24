@@ -1,296 +1,248 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-import joblib
 import numpy as np
 import requests
-from datetime import datetime
 import logging
-import os
+from fastapi import FastAPI
+from pydantic import BaseModel
+import joblib
+import tensorflow as tf
+from datetime import datetime
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
 
-# -------------------------
-# FastAPI app with CORS
-# -------------------------
-app = FastAPI(
-    title="Wildfire Prediction API",
-    description="AI-powered wildfire occurrence and severity prediction system",
-    version="1.0"
-)
+# Load models and scalers
+MODEL_VERSION = "v1.0"
+LOAD_TIME = datetime.utcnow().isoformat()
 
-# Enable CORS for web frontend
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+try:
+    occurrence_model = tf.keras.models.load_model("wildfire_occurrence_model.keras")
+    severity_model = tf.keras.models.load_model("wildfire_severity_model.keras")
+    occurrence_scaler = joblib.load("occurrence_scaler.joblib")
+    severity_scaler = joblib.load("severity_scaler.joblib")
+    logger.info("✅ Models and scalers loaded successfully")
+except Exception as e:
+    logger.error(f"❌ Failed to load models or scalers: {e}")
+    occurrence_model, severity_model, occurrence_scaler, severity_scaler = None, None, None, None
 
-# -------------------------
-# Global variables for models
-# -------------------------
-occurrence_model = None
-occurrence_scaler = None
-severity_model = None
-severity_scaler = None
-SEVERITY_THRESHOLDS = [0.6, 0.6, 0.8]
+# FastAPI app
+app = FastAPI(title="Wildfire Prediction API", version=MODEL_VERSION)
 
-# -------------------------
-# Load models function
-# -------------------------
-def load_models():
-    global occurrence_model, occurrence_scaler, severity_model, severity_scaler
-    try:
-        from tensorflow.keras.models import load_model
-        occurrence_model = load_model("wildfire_occurrence_model.keras")
-        occurrence_scaler = joblib.load("occurence_scaler.joblib")
-        severity_model = load_model("wildfire_severity_model.keras")
-        severity_scaler = joblib.load("severity_scaler.joblib")
-        logger.info("Models loaded successfully")
-        return True
-    except Exception as e:
-        logger.error(f"Error loading models: {e}")
-        return False
-
-# -------------------------
-# Request/Response models
-# -------------------------
-class PredictRequest(BaseModel):
+class PredictionRequest(BaseModel):
     lat: float
     lon: float
-    date: str
+    date: str  # format: YYYY-MM-DD
 
-class PredictionResponse(BaseModel):
-    occurrence_probability: float
-    occurrence_class: int
-    severity_probabilities: list
-    severity_class: int
 
-class HealthResponse(BaseModel):
-    status: str
-    models_loaded: bool
+# ============================================================
+# SAFE HELPERS
+# ============================================================
 
-class DateRangeResponse(BaseModel):
-    current_date: str
-    historical_data_available: str
-    forecast_range_info: str
+def safe_mean(arr, label="unknown"):
+    try:
+        if arr is None or len(arr) == 0:
+            logger.warning(f"⚠️ Missing data for {label}, defaulting to 0.0")
+            return 0.0
+        return float(np.nanmean(arr))
+    except Exception:
+        logger.warning(f"⚠️ Error in mean calc for {label}, defaulting to 0.0")
+        return 0.0
 
-# -------------------------
-# Utility functions
-# -------------------------
-def get_daynight_flag(hour=None):
-    if hour is None:
-        hour = datetime.now().hour
-    return 0.0 if 6 <= hour < 18 else 1.0
+def safe_min(arr, label="unknown"):
+    try:
+        if arr is None or len(arr) == 0:
+            logger.warning(f"⚠️ Missing data for {label}, defaulting to 0.0")
+            return 0.0
+        return float(np.nanmin(arr))
+    except Exception:
+        logger.warning(f"⚠️ Error in min calc for {label}, defaulting to 0.0")
+        return 0.0
 
+def safe_max(arr, label="unknown"):
+    try:
+        if arr is None or len(arr) == 0:
+            logger.warning(f"⚠️ Missing data for {label}, defaulting to 0.0")
+            return 0.0
+        return float(np.nanmax(arr))
+    except Exception:
+        logger.warning(f"⚠️ Error in max calc for {label}, defaulting to 0.0")
+        return 0.0
+
+def safe_sum(arr, label="unknown"):
+    try:
+        if arr is None or len(arr) == 0:
+            logger.warning(f"⚠️ Missing data for {label}, defaulting to 0.0")
+            return 0.0
+        return float(np.nansum(arr))
+    except Exception:
+        logger.warning(f"⚠️ Error in sum calc for {label}, defaulting to 0.0")
+        return 0.0
+
+
+# ============================================================
+# FWI (same as training)
+# ============================================================
 
 def calc_fwi_simple(temp_mean, wind_speed_mean, humidity_min):
-    """Simple FWI formula used during dataset creation"""
     try:
         if humidity_min is None or humidity_min <= 0:
             return 0.0
+        if temp_mean is None:
+            temp_mean = 0.0
+        if wind_speed_mean is None:
+            wind_speed_mean = 0.0
         return (temp_mean * wind_speed_mean) / (humidity_min + 1)
     except Exception as e:
         logger.error(f"FWI calculation error: {e}")
         return 0.0
 
 
-def fetch_weather(lat, lon, date_str):
-    logger.info(f"Fetching weather for lat={lat}, lon={lon}, date={date_str}")
+# ============================================================
+# WEATHER FEATURE EXTRACTION
+# ============================================================
 
-    target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-    today = datetime.now().date()
-
-    if target_date <= today:
-        url = "https://archive-api.open-meteo.com/v1/archive"
-    else:
+def fetch_weather_features(lat, lon, date):
+    try:
         url = "https://api.open-meteo.com/v1/forecast"
+        params = {
+            "latitude": lat,
+            "longitude": lon,
+            "start_date": date,
+            "end_date": date,
+            "hourly": "temperature_2m,relative_humidity_2m,dewpoint_2m,"
+                      "wind_speed_10m,wind_direction_10m,wind_gusts_10m,"
+                      "surface_pressure,precipitation,shortwave_radiation,"
+                      "cloud_cover,et0_fao_evapotranspiration",
+            "timezone": "UTC"
+        }
 
-    params = {
-        "latitude": lat,
-        "longitude": lon,
-        "start_date": date_str,
-        "end_date": date_str,
-        "hourly": [
-            "temperature_2m", "dewpoint_2m", "relative_humidity_2m", "pressure_msl",
-            "wind_speed_10m", "wind_direction_10m", "shortwave_radiation", "cloudcover"
-        ],
-        "daily": ["et0_fao_evapotranspiration"],
-        "timezone": "auto"
-    }
+        response = requests.get(url, params=params)
+        if response.status_code != 200:
+            raise Exception(f"Weather API error {response.status_code}")
 
-    try:
-        response = requests.get(url, params=params, timeout=30)
-        response.raise_for_status()
-        data = response.json()
-    except Exception as e:
-        logger.error(f"Weather API error: {e}")
-        raise HTTPException(status_code=500, detail=f"Weather API error: {str(e)}")
+        data = response.json().get("hourly", {})
+        if not data:
+            raise Exception("No hourly data returned from API")
 
-    hourly = data.get("hourly", {})
-    daily = data.get("daily", {})
-
-    def safe_mean(arr):
-        return float(np.mean(arr)) if arr else 0.0
-
-    def safe_std(arr):
-        return float(np.std(arr)) if arr else 0.0
-
-    def safe_max(arr):
-        return float(np.max(arr)) if arr else 0.0
-
-    def safe_min(arr):
-        return float(np.min(arr)) if arr else 0.0
-
-    def safe_sum(arr):
-        return float(np.sum(arr)) if arr else 0.0
-
-    try:
-        temp_data = hourly.get("temperature_2m", [])
-        humidity_data = hourly.get("relative_humidity_2m", [])
-        wind_data = hourly.get("wind_speed_10m", [])
-
-        fwi = calc_fwi_simple(
-            temp_mean=safe_mean(temp_data),
-            wind_speed_mean=safe_mean(wind_data),
-            humidity_min=safe_min(humidity_data)
-        )
+        # Build features
+        temp_vals = data.get("temperature_2m", [])
+        humidity_vals = data.get("relative_humidity_2m", [])
+        wind_vals = data.get("wind_speed_10m", [])
+        wind_dir_vals = data.get("wind_direction_10m", [])
 
         features = {
-            "fire_weather_index": fwi,
-            "pressure_mean": safe_mean(hourly.get("pressure_msl", [])),
-            "wind_direction_mean": safe_mean(hourly.get("wind_direction_10m", [])),
-            "wind_direction_std": safe_std(hourly.get("wind_direction_10m", [])),
-            "solar_radiation_mean": safe_mean(hourly.get("shortwave_radiation", [])),
-            "dewpoint_mean": safe_mean(hourly.get("dewpoint_2m", [])),
-            "cloud_cover_mean": safe_mean(hourly.get("cloudcover", [])),
-            "evapotranspiration_total": safe_sum(daily.get("et0_fao_evapotranspiration", [0])),
-            "humidity_min": safe_min(hourly.get("relative_humidity_2m", [])),
-            "temp_mean": safe_mean(hourly.get("temperature_2m", [])),
-            "temp_range": safe_max(hourly.get("temperature_2m", [])) - safe_min(hourly.get("temperature_2m", [])),
-            "wind_speed_max": safe_max(hourly.get("wind_speed_10m", []))
+            "temp_mean": safe_mean(temp_vals, "temperature"),
+            "temp_max": safe_max(temp_vals, "temperature"),
+            "temp_min": safe_min(temp_vals, "temperature"),
+            "temp_range": safe_max(temp_vals, "temperature") - safe_min(temp_vals, "temperature"),
+            "humidity_mean": safe_mean(humidity_vals, "humidity"),
+            "humidity_min": safe_min(humidity_vals, "humidity"),
+            "humidity_max": safe_max(humidity_vals, "humidity"),
+            "dewpoint_mean": safe_mean(data.get("dewpoint_2m", []), "dewpoint"),
+            "wind_speed_mean": safe_mean(wind_vals, "wind speed"),
+            "wind_speed_max": safe_max(wind_vals, "wind speed"),
+            "wind_gust_max": safe_max(data.get("wind_gusts_10m", []), "wind gusts"),
+            "wind_direction_mean": safe_mean(wind_dir_vals, "wind direction"),
+            "wind_direction_std": float(np.nanstd(wind_dir_vals)) if wind_dir_vals else 0.0,
+            "pressure_mean": safe_mean(data.get("surface_pressure", []), "pressure"),
+            "solar_radiation_mean": safe_mean(data.get("shortwave_radiation", []), "solar radiation"),
+            "solar_radiation_max": safe_max(data.get("shortwave_radiation", []), "solar radiation"),
+            "cloud_cover_mean": safe_mean(data.get("cloud_cover", []), "cloud cover"),
+            "evapotranspiration_total": safe_sum(data.get("et0_fao_evapotranspiration", []), "evapotranspiration"),
         }
+
+        # Derived FWI
+        features["fire_weather_index"] = calc_fwi_simple(
+            features["temp_mean"], features["wind_speed_mean"], features["humidity_min"]
+        )
 
         return features
 
     except Exception as e:
-        logger.error(f"Error processing weather data: {e}")
+        logger.error(f"❌ Failed to build features: {e}")
         raise
 
 
-def build_features(lat, lon, date_str):
-    try:
-        weather = fetch_weather(lat, lon, date_str)
-        dt = datetime.strptime(date_str, "%Y-%m-%d")
-        lat_rad, lon_rad = np.radians(lat), np.radians(lon)
-        month_angle = 2 * np.pi * (dt.month / 12)
+# ============================================================
+# API ENDPOINTS
+# ============================================================
 
-        features = [
-            get_daynight_flag(),
-            weather["fire_weather_index"],
-            weather["pressure_mean"],
-            weather["wind_direction_mean"],
-            weather["wind_direction_std"],
-            weather["solar_radiation_mean"],
-            weather["dewpoint_mean"],
-            weather["cloud_cover_mean"],
-            weather["evapotranspiration_total"],
-            weather["humidity_min"],
-            weather["temp_mean"],
-            weather["temp_range"],
-            weather["wind_speed_max"],
-            np.sin(lat_rad), np.cos(lat_rad),
-            np.sin(lon_rad), np.cos(lon_rad),
-            np.sin(month_angle), np.cos(month_angle)
-        ]
+@app.get("/health")
+def health_check():
+    return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
 
-        return np.array(features).reshape(1, -1)
+@app.get("/ping")
+def ping():
+    return {"ping": "pong"}
 
-    except Exception as e:
-        logger.error(f"Feature building error: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to build features: {str(e)}")
-
-# -------------------------
-# API Endpoints
-# -------------------------
-@app.get("/")
-async def root():
+@app.get("/version")
+def version():
     return {
-        "message": "Wildfire Prediction API",
-        "version": "1.0",
-        "endpoints": ["/predict", "/health", "/date-info", "/docs"]
+        "model_version": MODEL_VERSION,
+        "loaded_at": LOAD_TIME,
+        "models_loaded": all([occurrence_model, severity_model, occurrence_scaler, severity_scaler])
     }
 
-
-@app.get("/health", response_model=HealthResponse)
-async def health_check():
-    models_loaded = all([
-        occurrence_model is not None,
-        occurrence_scaler is not None,
-        severity_model is not None,
-        severity_scaler is not None
-    ])
-    return HealthResponse(status="healthy" if models_loaded else "unhealthy", models_loaded=models_loaded)
-
-
-@app.get("/date-info", response_model=DateRangeResponse)
-async def get_date_info():
-    today = datetime.now().date()
-    return DateRangeResponse(
-        current_date=today.strftime("%Y-%m-%d"),
-        historical_data_available="Available from 1940-01-01 to yesterday",
-        forecast_range_info="Forecast range varies but typically 7-16 days from today. Check API response for exact range."
-    )
-
-
-@app.post("/predict", response_model=PredictionResponse)
-async def predict(data: PredictRequest):
-    if not all([occurrence_model, occurrence_scaler, severity_model, severity_scaler]):
-        raise HTTPException(status_code=503, detail="Models not loaded")
-
+@app.post("/predict")
+def predict(request: PredictionRequest):
     try:
-        X = build_features(data.lat, data.lon, data.date)
+        if not all([occurrence_model, severity_model, occurrence_scaler, severity_scaler]):
+            return {"detail": "Models not loaded"}
+
+        # Weather features
+        features = fetch_weather_features(request.lat, request.lon, request.date)
+
+        # Cyclical encodings for month
+        date_obj = datetime.strptime(request.date, "%Y-%m-%d")
+        month = date_obj.month
+        month_sin = np.sin(2 * np.pi * month / 12)
+        month_cos = np.cos(2 * np.pi * month / 12)
+
+        # Lat/Lon encodings
+        lat_rad = np.radians(request.lat)
+        lon_rad = np.radians(request.lon)
+        lat_sin, lat_cos = np.sin(lat_rad), np.cos(lat_rad)
+        lon_sin, lon_cos = np.sin(lon_rad), np.cos(lon_rad)
+
+        # Final feature vector (same order as training)
+        feature_vector = np.array([[
+            0,  # daynight_N (removed, always 0)
+            features["fire_weather_index"],
+            features["pressure_mean"],
+            features["wind_direction_mean"],
+            features["wind_direction_std"],
+            features["solar_radiation_mean"],
+            features["dewpoint_mean"],
+            features["cloud_cover_mean"],
+            features["evapotranspiration_total"],
+            features["humidity_min"],
+            features["temp_mean"],
+            features["temp_range"],
+            features["wind_speed_max"],
+            lat_sin, lat_cos, lon_sin, lon_cos,
+            month_sin, month_cos
+        ]], dtype=float)
 
         # Occurrence prediction
-        X_occ_scaled = occurrence_scaler.transform(X)
-        occ_probs = occurrence_model.predict(X_occ_scaled)[0]
-        occ_prob = float(occ_probs[0])
-        occ_class = int(occ_prob > 0.36)
+        occ_features = occurrence_scaler.transform(feature_vector)
+        occ_prob = float(occurrence_model.predict(occ_features)[0][0])
+        occ_class = 1 if occ_prob >= 0.36 else 0
 
         # Severity prediction
-        X_sev_scaled = severity_scaler.transform(X)
-        sev_probs = severity_model.predict(X_sev_scaled)[0]
-        sev_probs_list = [float(p) for p in sev_probs]
+        sev_features = severity_scaler.transform(feature_vector)
+        sev_probs = severity_model.predict(sev_features)[0]
+        sev_class = int(np.argmax(sev_probs))
 
-        candidates = [i for i, p in enumerate(sev_probs) if p >= SEVERITY_THRESHOLDS[i]]
-        sev_class = int(np.argmax(sev_probs)) if len(candidates) == 0 else max(candidates, key=lambda i: sev_probs[i])
-
-        return PredictionResponse(
-            occurrence_probability=occ_prob,
-            occurrence_class=occ_class,
-            severity_probabilities=sev_probs_list,
-            severity_class=sev_class
-        )
+        return {
+            "occurrence_probability": occ_prob,
+            "occurrence_class": occ_class,
+            "severity_probabilities": sev_probs.tolist(),
+            "severity_class": sev_class
+        }
 
     except Exception as e:
-        logger.error(f"Prediction error: {e}")
-        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
-
-
-@app.on_event("startup")
-async def startup_event():
-    logger.info("Starting Wildfire Prediction API...")
-    success = load_models()
-    if success:
-        logger.info("API ready!")
-    else:
-        logger.warning("API started but models failed to load")
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)), reload=True)
+        logger.error(f"Prediction failed: {e}")
+        return {"detail": f"Prediction failed: {e}"}
