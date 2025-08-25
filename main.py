@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, field_validator
 import joblib
 import numpy as np
@@ -236,13 +237,91 @@ app.add_middleware(
 # -------------------------
 # API Endpoints
 # -------------------------
-@app.get("/")
+
+@app.get("/", response_class=HTMLResponse)
 async def root():
-    return {
-        "message": "Wildfire Prediction API",
-        "version": "1.0",
-        "endpoints": ["/predict", "/health", "/date-info", "/docs"]
-    }
+    return """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <title>Wildfire Prediction API</title>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                background: #f9fafb;
+                color: #333;
+                margin: 0;
+                padding: 0;
+                line-height: 1.6;
+            }
+            header {
+                background: #d32f2f;
+                color: #fff;
+                padding: 1rem;
+                text-align: center;
+            }
+            main {
+                max-width: 800px;
+                margin: 2rem auto;
+                padding: 2rem;
+                background: #fff;
+                border-radius: 12px;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            }
+            h1 {
+                color: #d32f2f;
+            }
+            a {
+                color: #1976d2;
+                text-decoration: none;
+                font-weight: bold;
+            }
+            a:hover {
+                text-decoration: underline;
+            }
+            footer {
+                margin-top: 2rem;
+                text-align: center;
+                font-size: 0.9em;
+                color: #555;
+            }
+        </style>
+    </head>
+    <body>
+        <header>
+            <h1>🔥 Wildfire Prediction API</h1>
+            <p>AI-powered wildfire occurrence & severity prediction system</p>
+        </header>
+        <main>
+            <h2>Welcome</h2>
+            <p>This API uses machine learning models to predict wildfire occurrence 
+               and estimate severity based on weather conditions.</p>
+
+            <h3>Useful Endpoints</h3>
+            <ul>
+                <li><a href="/docs">📘 API Documentation</a> – Swagger UI</li>
+                <li><a href="/health">✅ Health Check</a> – Check model loading status</li>
+                <li><a href="/date-info">📅 Date Info</a> – Supported historical & forecast range</li>
+            </ul>
+
+            <h3>Example Usage</h3>
+            <pre><code>POST /predict
+{
+  "lat": 13.0827,
+  "lon": 80.2707,
+  "date": "2025-08-10"
+}</code></pre>
+
+            <p>The API will return wildfire occurrence probability and severity class predictions.</p>
+        </main>
+        <footer>
+            <p>🚀 Wildfire Prediction API v2.0.0</p>
+        </footer>
+    </body>
+    </html>
+    """
+
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
