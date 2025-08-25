@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 import logging
 import os
 from contextlib import asynccontextmanager
+import pandas as pd
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -21,6 +22,17 @@ occurrence_scaler = None
 severity_model = None
 severity_scaler = None
 SEVERITY_THRESHOLDS = [0.6, 0.6, 0.8]
+
+
+
+FEATURE_NAMES = [
+    "daynight_flag", "fire_weather_index", "pressure_mean",
+    "wind_direction_mean", "wind_direction_std", "solar_radiation_mean",
+    "dewpoint_mean", "cloud_cover_mean", "evapotranspiration_total",
+    "humidity_min", "temp_mean", "temp_range", "wind_speed_max",
+    "lat_sin", "lat_cos", "lon_sin", "lon_cos", "month_sin", "month_cos"
+]
+
 
 # -------------------------
 # Load models function
@@ -259,14 +271,17 @@ async def predict(data: PredictRequest):
     try:
         X = build_features(data.lat, data.lon, data.date)
 
+        # Convert X into a DataFrame with feature names (fixes sklearn warning)
+        X_df = pd.DataFrame(X, columns=FEATURE_NAMES)
+
         # Occurrence prediction
-        X_occ_scaled = occurrence_scaler.transform(X)
+        X_occ_scaled = occurrence_scaler.transform(X_df)
         occ_probs = occurrence_model.predict(X_occ_scaled)[0]
         occ_prob = float(occ_probs[0])
-        occ_class = int(occ_prob > 0.36)
+        occ_class = int(occ_prob > 0.50)
 
         # Severity prediction
-        X_sev_scaled = severity_scaler.transform(X)
+        X_sev_scaled = severity_scaler.transform(X_df)
         sev_probs = severity_model.predict(X_sev_scaled)[0]
         sev_probs_list = [float(p) for p in sev_probs]
 
@@ -279,6 +294,7 @@ async def predict(data: PredictRequest):
             severity_probabilities=sev_probs_list,
             severity_class=sev_class
         )
+
     except Exception as e:
         logger.error(f"Prediction error: {e}")
         raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
