@@ -12,7 +12,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Expose the port your FastAPI app will listen on
-EXPOSE 8000
+EXPOSE 7860
 
 # Run the FastAPI application using uvicorn
-CMD ["uvicorn", "wildfire_api:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "wildfire_api:app", "--host", "0.0.0.0", "--port", "7860"]
