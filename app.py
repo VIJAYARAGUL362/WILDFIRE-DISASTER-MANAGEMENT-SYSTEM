@@ -225,7 +225,7 @@ def get_daynight_flag():
 def root():
     return {"message": "Wildfire Prediction API", "version": "2.2.0", "status": "running"}
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 def health_check():
     """API health check endpoint"""
     try:
