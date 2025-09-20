@@ -169,8 +169,7 @@ def predict_fire_risk(input_data):
         "lon_cos", "lon_sin", "month_cos", "month_sin",
     ]
 
-    X = df[features].values
-
+    X = df[features]
     # Occurrence prediction
     X_occ_scaled = occurrence_scaler.transform(X)
     occ_prob = float(occurrence_model.predict(X_occ_scaled)[0][0])
