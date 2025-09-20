@@ -1,20 +1,21 @@
-# Core ML/runtime
-# Build tools
-setuptools>=65
-wheel
+# Optimized requirements.txt for Render deployment
+# Web framework
+fastapi==0.100.1
+uvicorn[standard]==0.23.2
+pydantic==1.10.12
 
-# Core ML/runtime
-tensorflow-cpu==2.13.0       # TensorFlow 2.20 is not officially available on PyPI yet; 2.13 is stable and supported
-keras==2.13.1
+# ML libraries (CPU versions for better compatibility)
+tensorflow-cpu==2.13.0
+scikit-learn==1.3.2
 numpy==1.24.3
 pandas==2.0.3
-scikit-learn==1.3.2          # Pin version to ensure compatibility with numpy/pandas
 joblib==1.3.2
-requests==2.31.0             # Latest compatible version
-python-dotenv==1.0.0         # Latest stable
 
-# Deployment
-streamlit==1.26.0
-fastapi==0.103.2
-uvicorn[standard]==0.23.2
+# HTTP client
+requests==2.31.0
 
+# Environment management
+python-dotenv==1.0.0
+
+# For health checks (if using curl in Dockerfile)
+# Note: curl should be installed via apt-get, not pip
