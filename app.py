@@ -107,7 +107,7 @@ def fetch_weather(lat, lon, date_str):
         f"&daily=temperature_2m_max,temperature_2m_min,temperature_2m_mean,"
         f"dewpoint_2m_mean,relative_humidity_2m_min,precipitation_sum,"
         f"windspeed_10m_max,winddirection_10m_dominant,shortwave_radiation_sum,"
-        f"surface_pressure_mean,cloudcover_mean,evapotranspiration_sum"
+        f"surface_pressure_mean,cloudcover_mean,et0_fao_evapotranspiration_sum"
         f"&timezone=UTC&start_date={date_str}&end_date={date_str}"
     )
 
@@ -127,7 +127,7 @@ def fetch_weather(lat, lon, date_str):
             "solar_radiation_mean": data["shortwave_radiation_sum"][0],
             "pressure_mean": data["surface_pressure_mean"][0],
             "cloud_cover_mean": data["cloudcover_mean"][0],
-            "evapotranspiration_total": data["evapotranspiration_sum"][0],
+            "evapotranspiration_total": data["et0_fao_evapotranspiration_sum"][0],
             "fire_weather_index": (
                 (data["temperature_2m_mean"][0] * (100 - data["relative_humidity_2m_min"][0]))
                 / (data["precipitation_sum"][0] + 1)
