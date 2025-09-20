@@ -4,7 +4,7 @@ emoji:
 colorFrom: 
 colorTo: 
 sdk: docker
-app_port: 8000
+app_port: 7860
 ---
 
 # Wildfire Prediction API
